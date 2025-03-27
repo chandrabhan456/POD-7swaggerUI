@@ -40,12 +40,14 @@ storage_model = api.model('AzureStorageConfig', {
 
 openai_model = api.model('AzureOpenAIConfig', {
     'azure_openai_api_key': fields.String(required=True, description="Azure OpenAI API Key"),
-    'azure_openai_deployment': fields.String(required=True, description="Azure OpenAI Deployment Name"),
+    'azure_openai_endpoint': fields.String(required=True, description="Azure OpenAI Endpoint"),
+    'azure_openai_api_version': fields.String(required=True, description="Azure OpenAI API version"),
+    'azure_openai_deployment': fields.String(required=True, description="Azure OpenAI deployment"),
 })
 
 doc_intelligence_model = api.model('AzureDocumentIntelligenceConfig', {
-    'azure_document_intelligence_endpoint': fields.String(required=True, description="Azure Document Intelligence Endpoint"),
-    'azure_document_intelligence_key': fields.String(required=True, description="Azure Document Intelligence API Key"),
+    'azure_di_endpoint': fields.String(required=True, description="Azure Document Intelligence Endpoint"),
+    'azure_di_api_key': fields.String(required=True, description="Azure Document Intelligence API Key"),
 })
 
 
@@ -92,20 +94,37 @@ class ConfigureOpenAI(Resource):
         """Configure Azure OpenAI"""
         data = request.json
         try:
+             # Validate required keys
+            required_keys = ['azure_openai_api_key', 'azure_openai_endpoint','azure_openai_deployment','azure_openai_api_version']
+            if not all(key in data for key in required_keys):
+                return {"message": "Missing required parameters!"}, 400
+
+            # Set Azure OpenAI credentials
+            # Set Azure OpenAI credentials
             openai.api_key = data['azure_openai_api_key']
-            response = openai.Model.list(request_timeout=5)  # ⏳ Timeout added
-            if response:
-                return {"message": "Azure OpenAI configured successfully!"}, 200
-            else:
-                return {"message": "Invalid OpenAI response"}, 400
-        except openai.error.AuthenticationError:
+            openai.api_base = data['azure_openai_endpoint']
+            openai.api_version = data['azure_openai_api_version']
+            openai.api_type = "azure"  # Necessary for Azure OpenAI
+
+            deployment_name = data['azure_openai_deployment']  # Required for Azure OpenAI
+
+            # Test API connection
+            response = openai.ChatCompletion.create(  # ✅ CORRECT Azure OpenAI Syntax
+                engine=deployment_name,  # Use 'engine' instead of 'model' for Azure
+                messages=[{"role": "system", "content": "Say hello!"}],
+                max_tokens=5
+            )
+
+
+            return {"message": "Azure OpenAI configured successfully!", "sample_response": response}, 200
+
+           
+        except openai.AuthenticationError:
             return {"message": "Invalid OpenAI API key!"}, 401
-        except openai.error.Timeout:
-            return {"message": "Azure OpenAI request timed out!"}, 408
-        except Exception as e:
+        except openai.OpenAIError as e:  # Generic OpenAI errors
             return {"message": "Azure OpenAI configuration failed", "error": str(e)}, 400
-
-
+        except Exception as e:
+            return {"message": "Unexpected error occurred", "error": str(e)}, 500
 # 3️⃣ Azure Document Intelligence Configuration
 @ns.route('/document-intelligence')
 class ConfigureDocumentIntelligence(Resource):
@@ -114,16 +133,38 @@ class ConfigureDocumentIntelligence(Resource):
         """Configure Azure Document Intelligence"""
         data = request.json
         try:
-            doc_intelligence_client = DocumentIntelligenceClient(
-                endpoint=data['azure_document_intelligence_endpoint'],
-                credential=AzureKeyCredential(data['azure_document_intelligence_key'],transport=transport)
-            )
-            response = doc_intelligence_client.get_info()
-            return {"message": "Azure Document Intelligence configured successfully!"}, 200
+            
+            # Validate required keys
+            required_keys = ['azure_di_api_key', 'azure_di_endpoint']
+            if not all(key in data for key in required_keys):
+                return {"message": "Missing required parameters!"}, 400
+
+            # Extract parameters
+            api_key = data['azure_di_api_key']
+            endpoint = data['azure_di_endpoint']
+            api_version = '2023-07-31'
+
+            # Test API connection with a simple request (GET available models)
+            test_url = f"{endpoint}/formrecognizer/documentModels?api-version={api_version}"
+
+            headers = {
+                "Ocp-Apim-Subscription-Key": api_key
+            }
+
+            response = requests.get(test_url, headers=headers, timeout=10)
+
+            # Check if request is successful
+            if response.status_code == 200:
+                return {"message": "Azure Document Intelligence configured successfully!"}, 200
+            else:
+                return {"message": "Failed to connect to Azure Document Intelligence", "error": response.text}, response.status_code
+
         except requests.exceptions.Timeout:
-            return {"message": "Azure Document Intelligence connection timed out!"}, 408
-        except Exception as e:
+            return {"message": "Azure Document Intelligence request timed out!"}, 408
+        except requests.exceptions.RequestException as e:
             return {"message": "Azure Document Intelligence configuration failed", "error": str(e)}, 400
+        except Exception as e:
+            return {"message": "Unexpected error occurred", "error": str(e)}, 500
 
 
 # New namespace for Data Load
